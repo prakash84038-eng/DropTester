@@ -1232,12 +1232,20 @@ TIPS
                     if not os.path.isdir(item_path): continue
                     if search_text and search_text not in item.lower(): continue
                     
+                    # Only include folders created by the app (identified by session markers)
+                    marker_files = ("metadata.json", "analysis.json", "report.pdf")
+                    if not any(os.path.exists(os.path.join(item_path, m)) for m in marker_files):
+                        continue
+                    # For display purposes, still count videos and PDFs
                     avis = [f for f in os.listdir(item_path) if f.lower().endswith('.avi')]
                     pdfs = [f for f in os.listdir(item_path) if f.lower().endswith('.pdf')]
-                    if not (pdfs or avis): continue
                     
-                    any_file = os.path.join(item_path, (pdfs or avis)[0])
-                    dt = datetime.fromtimestamp(os.path.getctime(any_file)).strftime('%Y-%m-%d %H:%M')
+                    # Use the modification time of the folder if no videos/PDFs are found
+                    if pdfs or avis:
+                        any_file = os.path.join(item_path, (pdfs or avis)[0])
+                        dt = datetime.fromtimestamp(os.path.getctime(any_file)).strftime('%Y-%m-%d %H:%M')
+                    else:
+                        dt = datetime.fromtimestamp(os.path.getmtime(item_path)).strftime('%Y-%m-%d %H:%M')
                     result = "Completed" if pdfs else "In Progress"
                     tree.insert('', 'end', values=(item, dt, f"{len(avis)} video(s)", result))
             except Exception as e:
