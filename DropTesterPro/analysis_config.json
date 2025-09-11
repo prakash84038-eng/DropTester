@@ -1,0 +1,6 @@
+{
+  "deformation_threshold": 0.15,
+  "spill_min_area": 400,
+  "shatter_contour_increase_ratio": 2.0,
+  "shatter_min_contour_count": 5
+}

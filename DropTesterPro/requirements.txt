@@ -1,0 +1,10 @@
+# Core runtime
+opencv-python
+numpy
+pillow
+fpdf2
+# UI
+ttkthemes
+# ML (optional, for training script)
+tensorflow>=2.12
+scikit-learn
