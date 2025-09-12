@@ -5,7 +5,7 @@ import subprocess
 import time
 import threading
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -29,6 +29,11 @@ from .camera import DualCameraRecorder, CV2_AVAILABLE, NUMPY_AVAILABLE
 from . import constants
 from . import utils
 from . import analysis
+from .analytics import TestAnalytics
+from .analytics_ui import AnalyticsDashboard
+from .enhanced_analysis import EnhancedAnalyzer
+from .data_export import DataExporter
+from .video_analysis import VideoAnalyzer
 
 class BottleTestApp:
     def __init__(self, root):
@@ -97,6 +102,13 @@ class BottleTestApp:
         self.recording_start_time = 0
 
         self.recorder = DualCameraRecorder()
+
+        # Initialize analytics and enhanced features
+        self.analytics = TestAnalytics()
+        self.analytics_dashboard = AnalyticsDashboard(self)
+        self.enhanced_analyzer = EnhancedAnalyzer()
+        self.data_exporter = DataExporter(self.analytics)
+        self.video_analyzer = VideoAnalyzer(self)
 
         # Initialize recorder with saved resolution
         width, height = utils.load_video_settings()
@@ -727,15 +739,20 @@ TIPS
                     if cap:
                         cap.release()
 
-            # Run the analysis with the selected material type
+            # Run the analysis with the selected material type using enhanced analyzer
             material = self.material_var.get()
-            result = analysis.analyze_bottle(frame_before, frame_after, material_type=material)
+            result = self._use_enhanced_analysis(frame_before, frame_after, material)
             
             def _update_on_main_thread():
                 self.bottle_analysis_results[idx] = result
                 self.result_var.set(f"Bottle {idx+1} Analysis: {result.get('result', 'ERROR')}")
                 self._update_progress_panel()
                 self._update_ui_for_bottle()
+                
+                # Record to analytics if this is a new test
+                if not self.read_only:
+                    self._record_test_to_analytics(idx)
+                
                 self.root.config(cursor="")
 
                 # If analysis returns an error, show a popup message
@@ -1389,4 +1406,460 @@ TIPS
                 self.root.destroy()
             except Exception:
                 pass
+
+    # --- New Analytics and Enhanced Features ---
+    
+    def show_analytics_dashboard(self):
+        """Show the analytics dashboard window."""
+        try:
+            self.analytics_dashboard.show_dashboard()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open analytics dashboard: {e}")
+    
+    def show_export_dialog(self):
+        """Show data export dialog."""
+        export_win = tk.Toplevel(self.root)
+        export_win.title("Export Test Data")
+        export_win.geometry("500x400")
+        export_win.resizable(False, False)
+        
+        # Main frame
+        main_frame = ttk.Frame(export_win, padding=20)
+        main_frame.pack(fill='both', expand=True)
+        
+        # Export format
+        ttk.Label(main_frame, text="Export Format:", font=("Arial", 10, "bold")).pack(anchor='w', pady=(0, 5))
+        
+        format_var = tk.StringVar(value="csv")
+        format_frame = ttk.Frame(main_frame)
+        format_frame.pack(fill='x', pady=(0, 15))
+        
+        ttk.Radiobutton(format_frame, text="CSV (Basic)", variable=format_var, value="csv").pack(anchor='w')
+        ttk.Radiobutton(format_frame, text="Excel (Comprehensive)", variable=format_var, value="excel").pack(anchor='w')
+        ttk.Radiobutton(format_frame, text="JSON (Comprehensive)", variable=format_var, value="json").pack(anchor='w')
+        ttk.Radiobutton(format_frame, text="CSV Package (Multiple files)", variable=format_var, value="csv_package").pack(anchor='w')
+        
+        # Date range
+        ttk.Label(main_frame, text="Date Range:", font=("Arial", 10, "bold")).pack(anchor='w', pady=(0, 5))
+        
+        use_range_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(main_frame, text="Use date range filter", variable=use_range_var).pack(anchor='w')
+        
+        date_frame = ttk.Frame(main_frame)
+        date_frame.pack(fill='x', pady=(5, 15))
+        
+        ttk.Label(date_frame, text="From:").grid(row=0, column=0, sticky='w', padx=(0, 5))
+        from_date = tk.StringVar(value=(datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"))
+        ttk.Entry(date_frame, textvariable=from_date, width=12).grid(row=0, column=1, padx=(0, 10))
+        
+        ttk.Label(date_frame, text="To:").grid(row=0, column=2, sticky='w', padx=(0, 5))
+        to_date = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        ttk.Entry(date_frame, textvariable=to_date, width=12).grid(row=0, column=3)
+        
+        # Include analytics option
+        include_analytics_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(main_frame, text="Include analytics and summary data", 
+                       variable=include_analytics_var).pack(anchor='w', pady=(0, 15))
+        
+        # Status label
+        status_label = ttk.Label(main_frame, text="", foreground="green")
+        status_label.pack(pady=(0, 10))
+        
+        def perform_export():
+            try:
+                format_type = format_var.get()
+                
+                # Get file extension based on format
+                if format_type == "excel":
+                    extension = ".xlsx"
+                    file_types = [("Excel files", "*.xlsx"), ("All files", "*.*")]
+                elif format_type == "json":
+                    extension = ".json"
+                    file_types = [("JSON files", "*.json"), ("All files", "*.*")]
+                elif format_type == "csv_package":
+                    extension = ".zip"
+                    file_types = [("ZIP files", "*.zip"), ("All files", "*.*")]
+                else:
+                    extension = ".csv"
+                    file_types = [("CSV files", "*.csv"), ("All files", "*.*")]
+                
+                filename = filedialog.asksaveasfilename(
+                    title="Export Test Data",
+                    defaultextension=extension,
+                    filetypes=file_types
+                )
+                
+                if not filename:
+                    return
+                
+                # Prepare parameters
+                start_date = from_date.get() if use_range_var.get() else None
+                end_date = to_date.get() if use_range_var.get() else None
+                include_analytics = include_analytics_var.get()
+                
+                # Perform export
+                if format_type in ["excel", "json", "csv_package"]:
+                    success = self.data_exporter.export_comprehensive_report(
+                        filename, format_type, start_date, end_date, include_analytics
+                    )
+                else:
+                    success = self.analytics.export_data(filename, format_type, start_date, end_date)
+                
+                if success:
+                    status_label.config(text=f"✅ Export successful: {os.path.basename(filename)}")
+                    messagebox.showinfo("Export Complete", f"Data exported successfully to:\n{filename}")
+                else:
+                    status_label.config(text="❌ Export failed", foreground="red")
+                    messagebox.showerror("Export Failed", "Failed to export data. Please check the file path and try again.")
+                    
+            except Exception as e:
+                status_label.config(text="❌ Export failed", foreground="red")
+                messagebox.showerror("Export Error", f"Export failed: {e}")
+        
+        # Buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill='x', pady=(10, 0))
+        
+        ttk.Button(button_frame, text="Export", command=perform_export).pack(side='right', padx=(5, 0))
+        ttk.Button(button_frame, text="Cancel", command=export_win.destroy).pack(side='right')
+    
+    def generate_performance_report(self):
+        """Generate and show performance report."""
+        try:
+            # Get model performance if available
+            if hasattr(self, 'enhanced_analyzer'):
+                model_stats = self.enhanced_analyzer.get_model_performance_stats()
+            else:
+                model_stats = {"error": "Enhanced analyzer not available"}
+            
+            # Create report window
+            report_win = tk.Toplevel(self.root)
+            report_win.title("Performance Report")
+            report_win.geometry("800x600")
+            
+            # Create text widget with scrollbar
+            text_frame = ttk.Frame(report_win)
+            text_frame.pack(fill='both', expand=True, padx=10, pady=10)
+            
+            text_widget = tk.Text(text_frame, wrap=tk.WORD, state='disabled')
+            scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
+            text_widget.configure(yscrollcommand=scrollbar.set)
+            
+            text_widget.pack(side='left', fill='both', expand=True)
+            scrollbar.pack(side='right', fill='y')
+            
+            # Generate report content
+            report_content = self._generate_performance_report_content(model_stats)
+            
+            text_widget.config(state='normal')
+            text_widget.insert(1.0, report_content)
+            text_widget.config(state='disabled')
+            
+            # Add export button
+            export_btn = ttk.Button(report_win, text="Export Report", 
+                                   command=lambda: self._export_performance_report(report_content))
+            export_btn.pack(pady=10)
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate performance report: {e}")
+    
+    def _generate_performance_report_content(self, model_stats: dict) -> str:
+        """Generate performance report content."""
+        from datetime import datetime
+        
+        content = f"""
+🔍 BOTTLE DROP TESTER - PERFORMANCE REPORT
+═══════════════════════════════════════════════
+
+Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+📊 SYSTEM OVERVIEW
+------------------
+• Application Version: DropTesterPro v2.0
+• Analysis Method: Enhanced (Rule-based + ML Integration)
+• Camera Status: {'Connected' if self.cameras_ready else 'Demo Mode'}
+• ML Model Status: {'Available' if hasattr(self, 'enhanced_analyzer') and self.enhanced_analyzer.model_available else 'Not Available'}
+
+📈 RECENT ANALYSIS STATISTICS
+-----------------------------
+"""
+        
+        # Add model performance stats
+        if "error" not in model_stats:
+            content += f"""• Total Recent Analyses: {model_stats.get('total_analyses', 0)}
+• ML Integration Rate: {model_stats.get('ml_integration_rate', 0):.1f}%
+
+Analysis Method Distribution:
+"""
+            for method, count in model_stats.get('method_distribution', {}).items():
+                content += f"  - {method.replace('_', ' ').title()}: {count}\n"
+            
+            content += "\nAverage Confidence by Method:\n"
+            for method, confidence in model_stats.get('average_confidence_by_method', {}).items():
+                content += f"  - {method.replace('_', ' ').title()}: {confidence:.2f}\n"
+        
+        # Add analytics summary
+        try:
+            summary_stats = self.analytics.get_summary_stats(30)
+            content += f"""
+
+📊 TEST STATISTICS (Last 30 Days)
+----------------------------------
+• Total Tests Conducted: {summary_stats['total_tests']}
+• Overall Pass Rate: {summary_stats['pass_rate']:.1f}%
+• Overall Fail Rate: {summary_stats['fail_rate']:.1f}%
+• Unique Testers: {summary_stats['unique_testers']}
+• Average Confidence: {summary_stats['avg_confidence']:.2f}
+
+"""
+            
+            # Add material performance
+            material_stats = self.analytics.get_material_performance()
+            if material_stats:
+                content += "📦 MATERIAL PERFORMANCE BREAKDOWN\n"
+                content += "----------------------------------\n"
+                for material, stats in material_stats.items():
+                    content += f"• {material}:\n"
+                    content += f"  - Total Tests: {stats['total_tests']}\n"
+                    content += f"  - Pass Rate: {stats['pass_rate']:.1f}%\n"
+                    content += f"  - Avg Confidence: {stats['avg_confidence']:.2f}\n\n"
+            
+            # Add failure patterns
+            failure_patterns = self.analytics.get_failure_patterns()
+            if failure_patterns:
+                content += "⚠️  COMMON FAILURE PATTERNS\n"
+                content += "----------------------------\n"
+                for i, (reason, data) in enumerate(list(failure_patterns.items())[:5], 1):
+                    content += f"{i}. {reason} (Frequency: {data['total_frequency']})\n"
+                content += "\n"
+            
+        except Exception as e:
+            content += f"\n❌ Error retrieving analytics data: {e}\n"
+        
+        content += f"""
+🔧 RECOMMENDATIONS
+------------------
+"""
+        
+        # Add recommendations based on performance
+        if hasattr(self, 'enhanced_analyzer') and self.enhanced_analyzer.model_available:
+            if model_stats.get('ml_integration_rate', 0) < 50:
+                content += "• Consider increasing ML model usage for improved accuracy\n"
+            content += "• Regularly update ML model with new training data\n"
+        else:
+            content += "• Consider training and deploying ML model for enhanced analysis\n"
+        
+        if summary_stats.get('pass_rate', 100) < 80:
+            content += "• Review testing procedures - low pass rate detected\n"
+        
+        content += "• Regular calibration and maintenance of camera equipment\n"
+        content += "• Monitor confidence scores and investigate low-confidence results\n"
+        content += "• Export data regularly for backup and compliance\n"
+        
+        content += f"""
+
+📄 REPORT END
+==============
+This report was automatically generated by DropTesterPro Analytics Engine.
+For technical support, contact your system administrator.
+        """
+        
+        return content.strip()
+    
+    def _export_performance_report(self, content: str):
+        """Export performance report to file."""
+        try:
+            filename = filedialog.asksaveasfilename(
+                title="Export Performance Report",
+                defaultextension=".txt",
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+            )
+            
+            if filename:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                messagebox.showinfo("Export Complete", f"Performance report exported to:\n{filename}")
+                
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export report: {e}")
+    
+    def show_enhanced_analysis_settings(self):
+        """Show enhanced analysis configuration dialog."""
+        settings_win = tk.Toplevel(self.root)
+        settings_win.title("Enhanced Analysis Settings")
+        settings_win.geometry("600x500")
+        settings_win.resizable(False, False)
+        
+        # Main frame
+        main_frame = ttk.Frame(settings_win, padding=20)
+        main_frame.pack(fill='both', expand=True)
+        
+        # ML Model Section
+        ml_frame = ttk.LabelFrame(main_frame, text="Machine Learning Settings", padding=10)
+        ml_frame.pack(fill='x', pady=(0, 15))
+        
+        # Model status
+        model_status = "Available" if hasattr(self, 'enhanced_analyzer') and self.enhanced_analyzer.model_available else "Not Available"
+        ttk.Label(ml_frame, text=f"ML Model Status: {model_status}").pack(anchor='w')
+        
+        # Use ML option
+        use_ml_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(ml_frame, text="Use ML predictions when available", variable=use_ml_var).pack(anchor='w', pady=5)
+        
+        # Save training data option
+        save_training_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(ml_frame, text="Save frames for training data collection", variable=save_training_var).pack(anchor='w')
+        
+        # Confidence Settings
+        confidence_frame = ttk.LabelFrame(main_frame, text="Confidence Thresholds", padding=10)
+        confidence_frame.pack(fill='x', pady=(0, 15))
+        
+        ttk.Label(confidence_frame, text="High Confidence Threshold:").grid(row=0, column=0, sticky='w', pady=2)
+        high_conf_var = tk.DoubleVar(value=0.85)
+        ttk.Scale(confidence_frame, from_=0.5, to=0.99, variable=high_conf_var, orient='horizontal').grid(row=0, column=1, sticky='ew', padx=10)
+        ttk.Label(confidence_frame, textvariable=high_conf_var).grid(row=0, column=2)
+        
+        ttk.Label(confidence_frame, text="Medium Confidence Threshold:").grid(row=1, column=0, sticky='w', pady=2)
+        med_conf_var = tk.DoubleVar(value=0.65)
+        ttk.Scale(confidence_frame, from_=0.3, to=0.85, variable=med_conf_var, orient='horizontal').grid(row=1, column=1, sticky='ew', padx=10)
+        ttk.Label(confidence_frame, textvariable=med_conf_var).grid(row=1, column=2)
+        
+        confidence_frame.columnconfigure(1, weight=1)
+        
+        # Analysis Method Weights
+        weights_frame = ttk.LabelFrame(main_frame, text="Hybrid Analysis Weights", padding=10)
+        weights_frame.pack(fill='x', pady=(0, 15))
+        
+        ttk.Label(weights_frame, text="Rule-based Weight:").grid(row=0, column=0, sticky='w', pady=2)
+        rule_weight_var = tk.DoubleVar(value=0.6)
+        ttk.Scale(weights_frame, from_=0.0, to=1.0, variable=rule_weight_var, orient='horizontal').grid(row=0, column=1, sticky='ew', padx=10)
+        ttk.Label(weights_frame, textvariable=rule_weight_var).grid(row=0, column=2)
+        
+        ttk.Label(weights_frame, text="ML Weight:").grid(row=1, column=0, sticky='w', pady=2)
+        ml_weight_var = tk.DoubleVar(value=0.4)
+        ttk.Scale(weights_frame, from_=0.0, to=1.0, variable=ml_weight_var, orient='horizontal').grid(row=1, column=1, sticky='ew', padx=10)
+        ttk.Label(weights_frame, textvariable=ml_weight_var).grid(row=1, column=2)
+        
+        weights_frame.columnconfigure(1, weight=1)
+        
+        # Status display
+        status_label = ttk.Label(main_frame, text="", foreground="green")
+        status_label.pack(pady=10)
+        
+        def save_settings():
+            try:
+                # Update confidence calibration
+                if hasattr(self, 'enhanced_analyzer'):
+                    calibration_update = {
+                        "rule_based_confidence": {
+                            "high_threshold": high_conf_var.get(),
+                            "medium_threshold": med_conf_var.get()
+                        },
+                        "hybrid_weights": {
+                            "rule_based": rule_weight_var.get(),
+                            "ml_based": ml_weight_var.get()
+                        }
+                    }
+                    self.enhanced_analyzer.update_confidence_calibration(calibration_update)
+                
+                status_label.config(text="✅ Settings saved successfully")
+                settings_win.after(2000, settings_win.destroy)
+                
+            except Exception as e:
+                status_label.config(text=f"❌ Error saving settings: {e}", foreground="red")
+        
+        # Buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill='x', pady=(20, 0))
+        
+        ttk.Button(button_frame, text="Save", command=save_settings).pack(side='right', padx=(5, 0))
+        ttk.Button(button_frame, text="Cancel", command=settings_win.destroy).pack(side='right')
+    
+    def _record_test_to_analytics(self, bottle_index: int):
+        """Record test result to analytics database."""
+        try:
+            if not hasattr(self, 'analytics'):
+                return
+            
+            analysis_result = self.bottle_analysis_results[bottle_index]
+            if not analysis_result:
+                return
+            
+            test_data = {
+                'timestamp': datetime.now().isoformat(),
+                'sample_code': self.sample_code_var.get(),
+                'is_number': self.is_number_var.get(),
+                'parameter': self.parameter_var.get(),
+                'department': self.department_var.get(),
+                'testing_person': self.testing_person_var.get(),
+                'material_type': self.material_var.get(),
+                'result': analysis_result.get('result', ''),
+                'confidence': analysis_result.get('confidence', 0),
+                'metric': analysis_result.get('metric', ''),
+                'metric_value': analysis_result.get('value', 0),
+                'reason': analysis_result.get('reason', ''),
+                'video_path': self.bottle_video_paths[bottle_index] or '',
+                'manual_override': analysis_result.get('manual_override', False)
+            }
+            
+            self.analytics.record_test_result(test_data)
+            
+        except Exception as e:
+            print(f"Error recording test to analytics: {e}")
+    
+    def _use_enhanced_analysis(self, frame_before, frame_after, material_type: str):
+        """Use enhanced analysis if available, fallback to basic analysis."""
+        try:
+            if hasattr(self, 'enhanced_analyzer'):
+                # Use enhanced analysis with ML integration
+                result = self.enhanced_analyzer.analyze_with_confidence(
+                    frame_before, frame_after, material_type,
+                    use_ml=True, save_for_training=False
+                )
+                
+                # Convert enhanced result to basic format for compatibility
+                return {
+                    'result': result['final_result'],
+                    'reason': result.get('rule_based', {}).get('reason', ''),
+                    'confidence': result['final_confidence'],
+                    'metric': result.get('rule_based', {}).get('metric', ''),
+                    'value': result.get('rule_based', {}).get('value', 0),
+                    'analysis_method': result.get('analysis_method', 'enhanced'),
+                    'uncertainty_analysis': result.get('uncertainty_analysis', {})
+                }
+            else:
+                # Fallback to basic analysis
+                basic_result = analysis.analyze_bottle(frame_before, frame_after, material_type)
+                # Add confidence estimation for basic analysis
+                if basic_result.get('result') != 'ERROR':
+                    basic_result['confidence'] = 0.75  # Default confidence for rule-based
+                else:
+                    basic_result['confidence'] = 0.0
+                return basic_result
+                
+        except Exception as e:
+            print(f"Error in enhanced analysis: {e}")
+            # Fallback to basic analysis
+            return analysis.analyze_bottle(frame_before, frame_after, material_type)
+    
+    def show_video_analyzer_dialog(self):
+        """Show dialog to select video for analysis."""
+        from tkinter import filedialog
+        
+        # Get video file
+        video_path = filedialog.askopenfilename(
+            title="Select Video for Analysis",
+            filetypes=[
+                ("Video files", "*.avi *.mp4 *.mov *.mkv"),
+                ("AVI files", "*.avi"),
+                ("MP4 files", "*.mp4"),
+                ("All files", "*.*")
+            ]
+        )
+        
+        if video_path:
+            try:
+                self.video_analyzer.show_analyzer(video_path)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to open video analyzer: {e}")
             sys.exit(0)

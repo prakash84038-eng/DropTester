@@ -36,9 +36,19 @@ if __name__ == "__main__":
     filemenu.add_command(label="Exit", command=app.on_closing)
     menubar.add_cascade(label="File", menu=filemenu)
 
+    # Analytics menu
+    analytics_menu = tk.Menu(menubar, tearoff=0)
+    analytics_menu.add_command(label="Analytics Dashboard", command=app.show_analytics_dashboard)
+    analytics_menu.add_command(label="Export Data", command=app.show_export_dialog)
+    analytics_menu.add_command(label="Performance Report", command=app.generate_performance_report)
+    analytics_menu.add_separator()
+    analytics_menu.add_command(label="Video Analyzer", command=app.show_video_analyzer_dialog)
+    menubar.add_cascade(label="Analytics", menu=analytics_menu)
+
     # Optional: Devices menu to rescan cameras at runtime
     devmenu = tk.Menu(menubar, tearoff=0)
     devmenu.add_command(label="Rescan Cameras", command=app._rescan_cameras)
+    devmenu.add_command(label="Enhanced Analysis Settings", command=app.show_enhanced_analysis_settings)
     menubar.add_cascade(label="Devices", menu=devmenu)
 
     root.config(menu=menubar)
