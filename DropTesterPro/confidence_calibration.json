@@ -1,0 +1,22 @@
+{
+  "rule_based_confidence": {
+    "high_threshold": 0.85,
+    "medium_threshold": 0.65,
+    "deformation_scaling": 1.0,
+    "spill_scaling": 0.9,
+    "shatter_scaling": 0.8
+  },
+  "ml_confidence": {
+    "certainty_threshold": 0.8,
+    "uncertainty_penalty": 0.1
+  },
+  "hybrid_weights": {
+    "rule_based": 0.6,
+    "ml_based": 0.4
+  },
+  "analysis_settings": {
+    "use_ml_when_available": true,
+    "save_training_data": false,
+    "auto_tune_thresholds": false
+  }
+}
